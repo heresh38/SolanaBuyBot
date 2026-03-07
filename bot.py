@@ -6,8 +6,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from monitor import SolanaMonitor
 
 logging.basicConfig(
-format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-
+format=”%(asctime)s - %(name)s - %(levelname)s - %(message)s”,
 level=logging.INFO
 )
 logger = logging.getLogger(**name**)
@@ -30,16 +29,16 @@ await update.message.reply_text(
 “Notifies you on every buy above your minimum threshold.\n”
 “Watch *multiple tokens at once!*\n\n”
 “📋 *Commands:*\n”
-“`/watch <contract>` — Start watching a token\n”
-“`/unwatch <contract>` — Stop watching a specific token\n”
-“`/stopall` — Stop watching all tokens\n”
-“`/list` — Show all watched tokens\n”
-“`/status` — Summary stats\n”
-“`/setmin <amount>` — Set minimum buy in USD (default: $1)\n”
-“`/getmin` — Show current minimum buy\n\n”
+“`/watch <contract>` - Start watching a token\n”
+“`/unwatch <contract>` - Stop watching a specific token\n”
+“`/stopall` - Stop watching all tokens\n”
+“`/list` - Show all watched tokens\n”
+“`/status` - Summary stats\n”
+“`/setmin <amount>` - Set minimum buy in USD (default: $1)\n”
+“`/getmin` - Show current minimum buy\n\n”
 “Example:\n”
 “`/watch EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`\n”
-“`/setmin 50` — Only show buys of $50+”,
+“`/setmin 50` - Only show buys of $50+”,
 parse_mode=“Markdown”
 )
 
@@ -51,7 +50,7 @@ if not context.args:
     await update.message.reply_text(
         "❌ Please provide an amount.\n"
         "Usage: `/setmin <amount>`\n"
-        "Example: `/setmin 50` — only alert on buys of $50 or more",
+        "Example: `/setmin 50`",
         parse_mode="Markdown"
     )
     return
@@ -75,7 +74,6 @@ await update.message.reply_text(
     parse_mode="Markdown"
 )
 
-# Update all active monitors for this chat
 if chat_id in monitors:
     for monitor in monitors[chat_id].values():
         monitor.min_buy_usd = amount
@@ -106,8 +104,8 @@ contract = context.args[0].strip()
 
 if len(contract) < 32 or len(contract) > 44:
     await update.message.reply_text(
-        "❌ That doesn't look like a valid Solana contract address.\n"
-        "Solana addresses are 32–44 characters long.",
+        "❌ That does not look like a valid Solana contract address.\n"
+        "Solana addresses are 32-44 characters long.",
         parse_mode="Markdown"
     )
     return
@@ -144,7 +142,7 @@ await update.message.reply_text(
     f"✅ *Now watching:* `{contract[:6]}...{contract[-4:]}`\n\n"
     f"📏 Min buy threshold: *${current_min:,.2f}*\n"
     f"📡 Total tokens watched: *{count}*\n\n"
-    f"`/list` to see all • `/setmin <amount>` to change threshold",
+    f"`/list` to see all - `/setmin <amount>` to change threshold",
     parse_mode="Markdown"
 )
 ```
@@ -188,7 +186,7 @@ chat_id = update.effective_chat.id
 
 ```
 if chat_id not in monitors or not monitors[chat_id]:
-    await update.message.reply_text("⚠️ You're not watching any tokens right now.")
+    await update.message.reply_text("⚠️ You are not watching any tokens right now.")
     return
 
 count = len(monitors[chat_id])
