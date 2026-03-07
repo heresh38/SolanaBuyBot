@@ -9,7 +9,7 @@ from telegram import Bot
 logger = logging.getLogger(**name**)
 
 HELIUS_API_KEY = os.getenv(“HELIUS_API_KEY”)
-HELIUS_WS_URL = f”wss://mainnet.helius-rpc.com/?api-key={HELIUS_API_KEY}”
+HELIUS_WS_URL = “wss://mainnet.helius-rpc.com/?api-key=” + str(HELIUS_API_KEY)
 
 DEX_PROGRAMS = {
 “JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4”: “Jupiter”,
@@ -25,20 +25,20 @@ self.chat_id = chat_id
 self.bot = bot
 self.min_buy_usd = min_buy_usd
 self.running = False
-self.buy_count = 0        # buys that passed the filter and were posted
-self.filtered_count = 0   # buys that were silently skipped (below min)
+self.buy_count = 0
+self.filtered_count = 0
 self._ws = None
 
 ```
 async def start(self):
     self.running = True
-    logger.info(f"Starting monitor for {self.contract_address} (min ${self.min_buy_usd})")
+    logger.info("Starting monitor for " + self.contract_address + " (min $" + str(self.min_buy_usd) + ")")
 
     while self.running:
         try:
             await self._connect_and_listen()
         except Exception as e:
-            logger.error(f"WebSocket error: {e}")
+            logger.error("WebSocket error: " + str(e))
             if self.running:
                 logger.info("Reconnecting in 5s...")
                 await asyncio.sleep(5)
@@ -47,10 +47,11 @@ async def stop(self):
     self.running = False
     if self._ws:
         await self._ws.close()
-    logger.info(f"Monitor stopped for {self.contract_address}")
+    logger.info("Monitor stopped for " + self.contract_address)
 
 async def _connect_and_listen(self):
-    async with websockets.connect(HELIUS_WS_URL, ping_interval=30) as ws:
+    ws_url = "wss://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
+    async with websockets.connect(ws_url, ping_interval=30) as ws:
         self._ws = ws
 
         subscribe_msg = {
@@ -65,7 +66,7 @@ async def _connect_and_listen(self):
 
         await ws.send(json.dumps(subscribe_msg))
         response = await ws.recv()
-        logger.info(f"Subscribed to {self.contract_address[:8]}...: {json.loads(response)}")
+        logger.info("Subscribed to " + self.contract_address[:8] + "...")
 
         async for message in ws:
             if not self.running:
@@ -73,7 +74,7 @@ async def _connect_and_listen(self):
             try:
                 await self._process_message(json.loads(message))
             except Exception as e:
-                logger.error(f"Error processing message: {e}")
+                logger.error("Error processing message: " + str(e))
 
 async def _process_message(self, data: dict):
     if data.get("method") != "logsNotification":
@@ -99,13 +100,9 @@ async def _process_message(self, data: dict):
     if not buy_info:
         return
 
-    # --- Minimum buy filter ---
     if buy_info["usd_value"] < self.min_buy_usd:
         self.filtered_count += 1
-        logger.info(
-            f"Filtered buy: ${buy_info['usd_value']:.2f} < min ${self.min_buy_usd} "
-            f"({self.contract_address[:8]}...)"
-        )
+        logger.info("Filtered buy: $" + str(buy_info["usd_value"]) + " < min $" + str(self.min_buy_usd))
         return
 
     self.buy_count += 1
@@ -119,7 +116,7 @@ def _is_buy_transaction(self, logs: list) -> bool:
     return has_indicator or has_dex
 
 async def _fetch_transaction(self, signature: str) -> dict | None:
-    url = f"https://api.helius.xyz/v0/transactions?api-key={HELIUS_API_KEY}"
+    url = "https://api.helius.xyz/v0/transactions?api-key=" + str(HELIUS_API_KEY)
     payload = {"transactions": [signature]}
     try:
         async with aiohttp.ClientSession() as session:
@@ -128,7 +125,7 @@ async def _fetch_transaction(self, signature: str) -> dict | None:
                     data = await resp.json()
                     return data[0] if data else None
     except Exception as e:
-        logger.error(f"Failed to fetch tx {signature}: {e}")
+        logger.error("Failed to fetch tx " + signature + ": " + str(e))
     return None
 
 async def _parse_buy(self, tx: dict, signature: str) -> dict | None:
@@ -170,7 +167,7 @@ async def _parse_buy(self, tx: dict, signature: str) -> dict | None:
         }
 
     except Exception as e:
-        logger.error(f"Error parsing buy: {e}")
+        logger.error("Error parsing buy: " + str(e))
         return None
 
 async def _get_usd_value(self, sol_amount: float) -> float:
@@ -187,39 +184,39 @@ async def _get_usd_value(self, sol_amount: float) -> float:
     return 0.0
 
 async def _send_notification(self, buy: dict):
-    contract_short = f"{self.contract_address[:6]}...{self.contract_address[-4:]}"
-    buyer_short = f"{buy['buyer'][:6]}...{buy['buyer'][-4:]}"
+    contract_short = self.contract_address[:6] + "..." + self.contract_address[-4:]
+    buyer_short = buy["buyer"][:6] + "..." + buy["buyer"][-4:]
 
     tokens = buy["tokens_received"]
     if tokens >= 1_000_000:
-        tokens_str = f"{tokens / 1_000_000:.2f}M"
+        tokens_str = str(round(tokens / 1_000_000, 2)) + "M"
     elif tokens >= 1_000:
-        tokens_str = f"{tokens / 1_000:.2f}K"
+        tokens_str = str(round(tokens / 1_000, 2)) + "K"
     else:
-        tokens_str = f"{tokens:.4f}"
+        tokens_str = str(round(tokens, 4))
 
-    sol_str = f"{buy['sol_spent']:.4f}" if buy['sol_spent'] > 0 else "?"
-    usd_str = f"${buy['usd_value']:,.2f}" if buy['usd_value'] > 0 else "N/A"
-    dex_name = DEX_PROGRAMS.get(buy['dex'], buy['dex']) if buy['dex'] else "DEX"
+    sol_str = str(round(buy["sol_spent"], 4)) if buy["sol_spent"] > 0 else "?"
+    usd_str = "$" + "{:,.2f}".format(buy["usd_value"]) if buy["usd_value"] > 0 else "N/A"
+    dex_name = DEX_PROGRAMS.get(buy["dex"], buy["dex"]) if buy["dex"] else "DEX"
 
-    dex_screener = f"https://dexscreener.com/solana/{self.contract_address}"
-    birdeye = f"https://birdeye.so/token/{self.contract_address}?chain=solana"
-    solscan = f"https://solscan.io/tx/{buy['signature']}"
-    wallet_link = f"https://solscan.io/account/{buy['buyer']}"
+    dex_screener = "https://dexscreener.com/solana/" + self.contract_address
+    birdeye = "https://birdeye.so/token/" + self.contract_address + "?chain=solana"
+    solscan_tx = "https://solscan.io/tx/" + buy["signature"]
+    wallet_link = "https://solscan.io/account/" + buy["buyer"]
 
     message = (
-        f"🟢 *NEW BUY DETECTED!*\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"🪙 Token: `{contract_short}`\n"
-        f"🏦 DEX: *{dex_name}*\n\n"
-        f"👛 Buyer: [{buyer_short}]({wallet_link})\n"
-        f"💰 Spent: *{sol_str} SOL* ({usd_str})\n"
-        f"🎁 Received: *{tokens_str} tokens*\n\n"
-        f"🔗 [DexScreener]({dex_screener}) • "
-        f"[Birdeye]({birdeye}) • "
-        f"[TX]({solscan})\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"#{self.buy_count} buy • min ${self.min_buy_usd:,.2f}"
+        "🟢 *NEW BUY DETECTED!*\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "🪙 Token: `" + contract_short + "`\n"
+        "🏦 DEX: *" + dex_name + "*\n\n"
+        "👛 Buyer: [" + buyer_short + "](" + wallet_link + ")\n"
+        "💰 Spent: *" + sol_str + " SOL* (" + usd_str + ")\n"
+        "🎁 Received: *" + tokens_str + " tokens*\n\n"
+        "🔗 [DexScreener](" + dex_screener + ") • "
+        "[Birdeye](" + birdeye + ") • "
+        "[TX](" + solscan_tx + ")\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "#" + str(self.buy_count) + " buy • min $" + "{:,.2f}".format(self.min_buy_usd)
     )
 
     try:
@@ -230,5 +227,5 @@ async def _send_notification(self, buy: dict):
             disable_web_page_preview=True
         )
     except Exception as e:
-        logger.error(f"Failed to send notification: {e}")
+        logger.error("Failed to send notification: " + str(e))
 ```
