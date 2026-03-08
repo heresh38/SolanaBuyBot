@@ -19,6 +19,8 @@ DEX_PROGRAMS = {
 
 POLL_INTERVAL = 10
 SOL_MINT = "So11111111111111111111111111111111111111112"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+USDT_MINT = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
 
 
 class SolanaMonitor:
@@ -58,10 +60,10 @@ class SolanaMonitor:
             self._sol_price_last_fetch = asyncio.get_event_loop().time()
             logger.info("SOL price: $" + "{:.2f}".format(price))
         else:
-            logger.warning("Could not fetch SOL price, will retry on next poll")
+            logger.warning("Could not fetch SOL price, using fallback")
+            self._sol_price_cache = 130.0
 
     async def _fetch_sol_price(self) -> float:
-        # Use Helius asset API to get SOL price - same domain we already use
         try:
             url = "https://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
             payload = {
@@ -74,54 +76,17 @@ class SolanaMonitor:
                 async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        token_info = data.get("result", {}).get("token_info", {})
-                        price = token_info.get("price_info", {}).get("price_per_token", 0)
-                        if price and price > 0:
+                        price = data.get("result", {}).get("token_info", {}).get("price_info", {}).get("price_per_token", 0)
+                        if price and float(price) > 0:
                             return float(price)
         except Exception as e:
-            logger.warning("Helius asset price failed: " + str(e))
-
-        # Fallback: derive SOL price from a recent USDC swap via Helius transactions
-        try:
-            url = (
-                "https://api.helius.xyz/v0/addresses/"
-                + SOL_MINT
-                + "/transactions?api-key="
-                + str(HELIUS_API_KEY)
-                + "&limit=1&type=SWAP"
-            )
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        txs = await resp.json()
-                        if txs:
-                            tx = txs[0]
-                            transfers = tx.get("tokenTransfers", [])
-                            native = tx.get("nativeTransfers", [])
-                            # Find SOL amount and USDC amount in same tx
-                            usdc_amount = 0
-                            sol_lamports = 0
-                            for t in transfers:
-                                if t.get("mint") == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
-                                    usdc_amount = t.get("tokenAmount", 0)
-                            for t in native:
-                                sol_lamports += t.get("amount", 0)
-                            if usdc_amount > 0 and sol_lamports > 0:
-                                sol_amount = sol_lamports / 1e9
-                                return round(usdc_amount / sol_amount, 2)
-        except Exception as e:
-            logger.warning("Swap-derived price failed: " + str(e))
-
+            logger.warning("Helius price fetch failed: " + str(e))
         return 0.0
 
     async def _get_usd_value(self, sol_amount: float) -> float:
         now = asyncio.get_event_loop().time()
         if self._sol_price_cache == 0 or (now - self._sol_price_last_fetch) > 60:
             await self._refresh_sol_price()
-        if self._sol_price_cache == 0:
-            # Last resort: use a hardcoded fallback so buys still post
-            logger.warning("Using fallback SOL price $130")
-            return round(sol_amount * 130, 2)
         return round(sol_amount * self._sol_price_cache, 2)
 
     async def _seed_existing_signatures(self):
@@ -206,6 +171,7 @@ class SolanaMonitor:
             native_transfers = tx.get("nativeTransfers", [])
             source = tx.get("source", "")
 
+            # Step 1: find our token going TO someone (the buyer)
             tokens_received = 0
             buyer_wallet = fee_payer
 
@@ -221,13 +187,66 @@ class SolanaMonitor:
             if tokens_received == 0:
                 return None
 
+            # Step 2: calculate what the buyer paid
+            # Try native SOL transfers first
             sol_spent = 0
             for transfer in native_transfers:
                 if transfer.get("fromUserAccount") == buyer_wallet:
                     sol_spent += transfer.get("amount", 0)
-
             sol_amount = sol_spent / 1e9
-            usd_value = await self._get_usd_value(sol_amount)
+
+            # Try WSOL token transfers if no native SOL found
+            if sol_amount == 0:
+                for transfer in token_transfers:
+                    if (transfer.get("mint") == SOL_MINT and
+                            transfer.get("fromUserAccount") == buyer_wallet):
+                        sol_amount += transfer.get("tokenAmount", 0)
+
+            # Try USDC/USDT transfers (stablecoin buys)
+            usd_direct = 0
+            if sol_amount == 0:
+                for transfer in token_transfers:
+                    mint = transfer.get("mint", "")
+                    if mint in [USDC_MINT, USDT_MINT]:
+                        if transfer.get("fromUserAccount") == buyer_wallet:
+                            usd_direct += transfer.get("tokenAmount", 0)
+
+            # Calculate USD value
+            if usd_direct > 0:
+                usd_value = round(usd_direct, 2)
+            elif sol_amount > 0:
+                usd_value = await self._get_usd_value(sol_amount)
+            else:
+                # Last resort: use swap events from Helius if available
+                events = tx.get("events", {})
+                swap = events.get("swap", {})
+                native_input = swap.get("nativeInput", {})
+                token_inputs = swap.get("tokenInputs", [])
+
+                if native_input:
+                    sol_amount = native_input.get("amount", 0) / 1e9
+                    usd_value = await self._get_usd_value(sol_amount)
+                elif token_inputs:
+                    for inp in token_inputs:
+                        if inp.get("mint") in [USDC_MINT, USDT_MINT]:
+                            usd_direct += inp.get("tokenAmount", 0)
+                        elif inp.get("mint") == SOL_MINT:
+                            sol_amount += inp.get("tokenAmount", 0)
+                    if usd_direct > 0:
+                        usd_value = round(usd_direct, 2)
+                    else:
+                        usd_value = await self._get_usd_value(sol_amount)
+                else:
+                    return None
+
+            if usd_value <= 0:
+                return None
+
+            logger.info(
+                "Parsed buy: " + "{:.2f}".format(usd_value) + " USD"
+                + " | " + str(round(tokens_received, 2)) + " tokens"
+                + " | buyer: " + buyer_wallet[:8] + "..."
+            )
 
             return {
                 "signature": signature,
