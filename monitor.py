@@ -6,7 +6,7 @@ import aiohttp
 import websockets
 from telegram import Bot
 
-logger = logging.getLogger(**name**)
+logger = logging.getLogger(__name__)
 
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 HELIUS_WS_URL = "wss://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
@@ -19,7 +19,7 @@ DEX_PROGRAMS = {
 }
 
 class SolanaMonitor:
-def **init**(self, contract_address: str, chat_id: int, bot: Bot, min_buy_usd: float = 1.0):
+def __init__(self, contract_address: str, chat_id: int, bot: Bot, min_buy_usd: float = 1.0):
 self.contract_address = contract_address
 self.chat_id = chat_id
 self.bot = bot
