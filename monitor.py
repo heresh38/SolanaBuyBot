@@ -1,5 +1,4 @@
 import os
-import json
 import asyncio
 import logging
 import aiohttp
@@ -18,7 +17,7 @@ DEX_PROGRAMS = {
     "pumpCFAmQEPpFgJxMKwN3fwmQ8p8jD5HBn5DkaWbSXR": "Pump.fun AMM",
 }
 
-POLL_INTERVAL = 10  # seconds between polls
+POLL_INTERVAL = 10
 
 
 class SolanaMonitor:
@@ -38,7 +37,10 @@ class SolanaMonitor:
         self.running = True
         logger.info("Polling monitor started for " + self.contract_address)
 
-        # Pre-load existing signatures so we don't spam old txs on startup
+        # Fetch SOL price immediately on startup
+        await self._refresh_sol_price()
+
+        # Seed existing so we dont alert on old txs
         await self._seed_existing_signatures()
 
         while self.running:
@@ -51,6 +53,49 @@ class SolanaMonitor:
     async def stop(self):
         self.running = False
         logger.info("Monitor stopped for " + self.contract_address)
+
+    async def _refresh_sol_price(self):
+        price = await self._fetch_sol_price()
+        if price > 0:
+            self._sol_price_cache = price
+            self._sol_price_last_fetch = asyncio.get_event_loop().time()
+            logger.info("SOL price: $" + str(price))
+        else:
+            logger.warning("Could not fetch SOL price")
+
+    async def _fetch_sol_price(self) -> float:
+        # Try Binance first (no rate limit issues)
+        try:
+            url = "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        price = float(data.get("price", 0))
+                        if price > 0:
+                            return price
+        except Exception as e:
+            logger.warning("Binance price fetch failed: " + str(e))
+
+        # Fallback to CoinGecko
+        try:
+            url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return float(data.get("solana", {}).get("usd", 0))
+        except Exception as e:
+            logger.warning("CoinGecko price fetch failed: " + str(e))
+
+        return 0.0
+
+    async def _get_usd_value(self, sol_amount: float) -> float:
+        now = asyncio.get_event_loop().time()
+        # Refresh price every 60 seconds
+        if self._sol_price_cache == 0 or (now - self._sol_price_last_fetch) > 60:
+            await self._refresh_sol_price()
+        return round(sol_amount * self._sol_price_cache, 2)
 
     async def _seed_existing_signatures(self):
         logger.info("Seeding existing signatures for " + self.contract_address[:8] + "...")
@@ -67,7 +112,6 @@ class SolanaMonitor:
             logger.info("No transactions returned for " + self.contract_address[:8] + "...")
             return
 
-        # Process in chronological order (oldest first)
         new_txs = [tx for tx in reversed(txs) if tx.get("signature") not in self._seen_signatures]
 
         if new_txs:
@@ -77,10 +121,8 @@ class SolanaMonitor:
             sig = tx.get("signature", "")
             if sig:
                 self._seen_signatures.add(sig)
-            # Keep seen set from growing forever
             if len(self._seen_signatures) > 500:
                 self._seen_signatures = set(list(self._seen_signatures)[-200:])
-
             await self._process_transaction(tx)
 
     async def _fetch_recent_transactions(self, limit: int = 10):
@@ -107,8 +149,7 @@ class SolanaMonitor:
 
     async def _process_transaction(self, tx: dict):
         signature = tx.get("signature", "")
-        err = tx.get("transactionError")
-        if err:
+        if tx.get("transactionError"):
             return
 
         buy_info = await self._parse_buy(tx, signature)
@@ -118,7 +159,7 @@ class SolanaMonitor:
         if buy_info["usd_value"] < self.min_buy_usd:
             self.filtered_count += 1
             logger.info(
-                "Filtered: $" + str(buy_info["usd_value"])
+                "Filtered: $" + "{:.2f}".format(buy_info["usd_value"])
                 + " < min $" + str(self.min_buy_usd)
                 + " | " + signature[:12] + "..."
             )
@@ -126,8 +167,9 @@ class SolanaMonitor:
 
         self.buy_count += 1
         logger.info(
-            "Buy #" + str(self.buy_count) + " detected: $"
-            + str(buy_info["usd_value"]) + " | " + signature[:12] + "..."
+            "Buy #" + str(self.buy_count) + " posting: $"
+            + "{:.2f}".format(buy_info["usd_value"])
+            + " | " + signature[:12] + "..."
         )
         await self._send_notification(buy_info)
 
@@ -145,7 +187,6 @@ class SolanaMonitor:
                 if transfer.get("mint") == self.contract_address:
                     amount = transfer.get("tokenAmount", 0)
                     to_account = transfer.get("toUserAccount", "")
-                    # Only count if tokens are going TO someone (a buy)
                     if amount > 0 and to_account:
                         tokens_received = amount
                         buyer_wallet = to_account
@@ -154,7 +195,6 @@ class SolanaMonitor:
             if tokens_received == 0:
                 return None
 
-            # Calculate SOL spent by the buyer
             sol_spent = 0
             for transfer in native_transfers:
                 if transfer.get("fromUserAccount") == buyer_wallet:
@@ -175,25 +215,6 @@ class SolanaMonitor:
         except Exception as e:
             logger.error("Error parsing tx: " + str(e))
             return None
-
-    async def _get_usd_value(self, sol_amount: float) -> float:
-        now = asyncio.get_event_loop().time()
-        # Cache SOL price for 60 seconds
-        if self._sol_price_cache and (now - self._sol_price_last_fetch) < 60:
-            return round(sol_amount * self._sol_price_cache, 2)
-        try:
-            url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        price = data.get("solana", {}).get("usd", 0)
-                        self._sol_price_cache = price
-                        self._sol_price_last_fetch = now
-                        return round(sol_amount * price, 2)
-        except Exception:
-            pass
-        return 0.0
 
     async def _send_notification(self, buy: dict):
         contract_short = self.contract_address[:6] + "..." + self.contract_address[-4:]
