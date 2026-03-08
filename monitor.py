@@ -18,6 +18,7 @@ DEX_PROGRAMS = {
 }
 
 POLL_INTERVAL = 10
+SOL_MINT = "So11111111111111111111111111111111111111112"
 
 
 class SolanaMonitor:
@@ -36,11 +37,7 @@ class SolanaMonitor:
     async def start(self):
         self.running = True
         logger.info("Polling monitor started for " + self.contract_address)
-
-        # Fetch SOL price immediately on startup
         await self._refresh_sol_price()
-
-        # Seed existing so we dont alert on old txs
         await self._seed_existing_signatures()
 
         while self.running:
@@ -59,42 +56,72 @@ class SolanaMonitor:
         if price > 0:
             self._sol_price_cache = price
             self._sol_price_last_fetch = asyncio.get_event_loop().time()
-            logger.info("SOL price: $" + str(price))
+            logger.info("SOL price: $" + "{:.2f}".format(price))
         else:
-            logger.warning("Could not fetch SOL price")
+            logger.warning("Could not fetch SOL price, will retry on next poll")
 
     async def _fetch_sol_price(self) -> float:
-        # Try Binance first (no rate limit issues)
+        # Use Helius asset API to get SOL price - same domain we already use
         try:
-            url = "https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT"
+            url = "https://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "sol-price",
+                "method": "getAsset",
+                "params": {"id": SOL_MINT}
+            }
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        price = float(data.get("price", 0))
-                        if price > 0:
-                            return price
+                        token_info = data.get("result", {}).get("token_info", {})
+                        price = token_info.get("price_info", {}).get("price_per_token", 0)
+                        if price and price > 0:
+                            return float(price)
         except Exception as e:
-            logger.warning("Binance price fetch failed: " + str(e))
+            logger.warning("Helius asset price failed: " + str(e))
 
-        # Fallback to CoinGecko
+        # Fallback: derive SOL price from a recent USDC swap via Helius transactions
         try:
-            url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
+            url = (
+                "https://api.helius.xyz/v0/addresses/"
+                + SOL_MINT
+                + "/transactions?api-key="
+                + str(HELIUS_API_KEY)
+                + "&limit=1&type=SWAP"
+            )
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        return float(data.get("solana", {}).get("usd", 0))
+                        txs = await resp.json()
+                        if txs:
+                            tx = txs[0]
+                            transfers = tx.get("tokenTransfers", [])
+                            native = tx.get("nativeTransfers", [])
+                            # Find SOL amount and USDC amount in same tx
+                            usdc_amount = 0
+                            sol_lamports = 0
+                            for t in transfers:
+                                if t.get("mint") == "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v":
+                                    usdc_amount = t.get("tokenAmount", 0)
+                            for t in native:
+                                sol_lamports += t.get("amount", 0)
+                            if usdc_amount > 0 and sol_lamports > 0:
+                                sol_amount = sol_lamports / 1e9
+                                return round(usdc_amount / sol_amount, 2)
         except Exception as e:
-            logger.warning("CoinGecko price fetch failed: " + str(e))
+            logger.warning("Swap-derived price failed: " + str(e))
 
         return 0.0
 
     async def _get_usd_value(self, sol_amount: float) -> float:
         now = asyncio.get_event_loop().time()
-        # Refresh price every 60 seconds
         if self._sol_price_cache == 0 or (now - self._sol_price_last_fetch) > 60:
             await self._refresh_sol_price()
+        if self._sol_price_cache == 0:
+            # Last resort: use a hardcoded fallback so buys still post
+            logger.warning("Using fallback SOL price $130")
+            return round(sol_amount * 130, 2)
         return round(sol_amount * self._sol_price_cache, 2)
 
     async def _seed_existing_signatures(self):
@@ -109,7 +136,6 @@ class SolanaMonitor:
     async def _poll(self):
         txs = await self._fetch_recent_transactions(limit=10)
         if not txs:
-            logger.info("No transactions returned for " + self.contract_address[:8] + "...")
             return
 
         new_txs = [tx for tx in reversed(txs) if tx.get("signature") not in self._seen_signatures]
