@@ -35,11 +35,14 @@ class SolanaMonitor:
         self._seen_signatures = set()
         self._sol_price_cache = 0.0
         self._sol_price_last_fetch = 0
+        self.token_name = "Unknown"
+        self.token_symbol = ""
 
     async def start(self):
         self.running = True
         logger.info("Polling monitor started for " + self.contract_address)
         await self._refresh_sol_price()
+        await self._fetch_token_metadata()
         await self._seed_existing_signatures()
 
         while self.running:
@@ -82,6 +85,33 @@ class SolanaMonitor:
         except Exception as e:
             logger.warning("Helius price fetch failed: " + str(e))
         return 0.0
+
+    async def _fetch_token_metadata(self):
+        try:
+            url = "https://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
+            payload = {
+                "jsonrpc": "2.0",
+                "id": "token-meta",
+                "method": "getAsset",
+                "params": {"id": self.contract_address}
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        result = data.get("result", {})
+                        content = result.get("content", {})
+                        meta = content.get("metadata", {})
+                        token_info = result.get("token_info", {})
+                        name = meta.get("name", "") or token_info.get("name", "")
+                        symbol = meta.get("symbol", "") or token_info.get("symbol", "")
+                        if name:
+                            self.token_name = name
+                        if symbol:
+                            self.token_symbol = symbol
+                        logger.info("Token: " + self.token_name + " (" + self.token_symbol + ")")
+        except Exception as e:
+            logger.warning("Could not fetch token metadata: " + str(e))
 
     async def _get_usd_value(self, sol_amount: float) -> float:
         now = asyncio.get_event_loop().time()
@@ -264,6 +294,9 @@ class SolanaMonitor:
     async def _send_notification(self, buy: dict):
         contract_short = self.contract_address[:6] + "..." + self.contract_address[-4:]
         buyer_short = buy["buyer"][:6] + "..." + buy["buyer"][-4:]
+        name_str = self.token_name
+        if self.token_symbol and self.token_symbol != self.token_name:
+            name_str = self.token_name + " (" + self.token_symbol + ")"
 
         tokens = buy["tokens_received"]
         if tokens >= 1_000_000:
@@ -285,7 +318,8 @@ class SolanaMonitor:
         message = (
             "🟢 *NEW BUY DETECTED!*\n"
             "━━━━━━━━━━━━━━━━━━\n"
-            "🪙 Token: `" + contract_short + "`\n"
+            "🪙 *" + name_str + "*\n"
+            "`" + contract_short + "`\n"
             "🏦 DEX: *" + dex_name + "*\n\n"
             "👛 Buyer: [" + buyer_short + "](" + wallet_link + ")\n"
             "💰 Spent: *" + sol_str + " SOL* (" + usd_str + ")\n"
