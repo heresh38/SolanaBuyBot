@@ -9,7 +9,7 @@ logging.basicConfig(
 format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 level=logging.INFO
 )
-logger = logging.getLogger(**name**)
+logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
@@ -295,5 +295,5 @@ logger.info("Bot started!")
 app.run_polling(allowed_updates=Update.ALL_TYPES)
 ```
 
-if **name** == "**main**":
+if __name__ == "__main__":
 main()
