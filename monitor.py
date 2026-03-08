@@ -3,20 +3,22 @@ import json
 import asyncio
 import logging
 import aiohttp
-import websockets
 from telegram import Bot
 
+logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
-HELIUS_WS_URL = "wss://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
 
 DEX_PROGRAMS = {
     "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "Jupiter",
     "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium",
     "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": "Orca",
     "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun",
+    "pumpCFAmQEPpFgJxMKwN3fwmQ8p8jD5HBn5DkaWbSXR": "Pump.fun AMM",
 }
+
+POLL_INTERVAL = 10  # seconds between polls
 
 
 class SolanaMonitor:
@@ -28,107 +30,108 @@ class SolanaMonitor:
         self.running = False
         self.buy_count = 0
         self.filtered_count = 0
-        self._ws = None
+        self._seen_signatures = set()
+        self._sol_price_cache = 0.0
+        self._sol_price_last_fetch = 0
 
     async def start(self):
         self.running = True
-        logger.info("Starting monitor for " + self.contract_address + " (min $" + str(self.min_buy_usd) + ")")
+        logger.info("Polling monitor started for " + self.contract_address)
+
+        # Pre-load existing signatures so we don't spam old txs on startup
+        await self._seed_existing_signatures()
 
         while self.running:
             try:
-                await self._connect_and_listen()
+                await self._poll()
             except Exception as e:
-                logger.error("WebSocket error: " + str(e))
-                if self.running:
-                    logger.info("Reconnecting in 5s...")
-                    await asyncio.sleep(5)
+                logger.error("Poll error: " + str(e))
+            await asyncio.sleep(POLL_INTERVAL)
 
     async def stop(self):
         self.running = False
-        if self._ws:
-            await self._ws.close()
         logger.info("Monitor stopped for " + self.contract_address)
 
-    async def _connect_and_listen(self):
-        ws_url = "wss://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
-        async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws:
-            self._ws = ws
+    async def _seed_existing_signatures(self):
+        logger.info("Seeding existing signatures for " + self.contract_address[:8] + "...")
+        txs = await self._fetch_recent_transactions(limit=10)
+        for tx in txs:
+            sig = tx.get("signature", "")
+            if sig:
+                self._seen_signatures.add(sig)
+        logger.info("Seeded " + str(len(self._seen_signatures)) + " existing signatures")
 
-            subscribe_msg = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "logsSubscribe",
-                "params": [
-                    {"mentions": [self.contract_address]},
-                    {"commitment": "confirmed"}
-                ]
-            }
-
-            await ws.send(json.dumps(subscribe_msg))
-            response = await ws.recv()
-            logger.info("Subscribed to " + self.contract_address[:8] + "...")
-
-            async for message in ws:
-                if not self.running:
-                    break
-                try:
-                    await self._process_message(json.loads(message))
-                except Exception as e:
-                    logger.error("Error processing message: " + str(e))
-
-    async def _process_message(self, data: dict):
-        if data.get("method") != "logsNotification":
+    async def _poll(self):
+        txs = await self._fetch_recent_transactions(limit=10)
+        if not txs:
+            logger.info("No transactions returned for " + self.contract_address[:8] + "...")
             return
 
-        result = data.get("params", {}).get("result", {})
-        value = result.get("value", {})
-        logs = value.get("logs", [])
-        signature = value.get("signature", "")
-        err = value.get("err")
+        # Process in chronological order (oldest first)
+        new_txs = [tx for tx in reversed(txs) if tx.get("signature") not in self._seen_signatures]
 
+        if new_txs:
+            logger.info("Found " + str(len(new_txs)) + " new transactions for " + self.contract_address[:8] + "...")
+
+        for tx in new_txs:
+            sig = tx.get("signature", "")
+            if sig:
+                self._seen_signatures.add(sig)
+            # Keep seen set from growing forever
+            if len(self._seen_signatures) > 500:
+                self._seen_signatures = set(list(self._seen_signatures)[-200:])
+
+            await self._process_transaction(tx)
+
+    async def _fetch_recent_transactions(self, limit: int = 10):
+        url = (
+            "https://api.helius.xyz/v0/addresses/"
+            + self.contract_address
+            + "/transactions?api-key="
+            + str(HELIUS_API_KEY)
+            + "&limit="
+            + str(limit)
+            + "&type=SWAP"
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+                    else:
+                        text = await resp.text()
+                        logger.error("Helius API error " + str(resp.status) + ": " + text)
+        except Exception as e:
+            logger.error("Failed to fetch transactions: " + str(e))
+        return []
+
+    async def _process_transaction(self, tx: dict):
+        signature = tx.get("signature", "")
+        err = tx.get("transactionError")
         if err:
             return
 
-        if not self._is_buy_transaction(logs):
-            return
-
-        tx_details = await self._fetch_transaction(signature)
-        if not tx_details:
-            return
-
-        buy_info = await self._parse_buy(tx_details, signature)
+        buy_info = await self._parse_buy(tx, signature)
         if not buy_info:
             return
 
         if buy_info["usd_value"] < self.min_buy_usd:
             self.filtered_count += 1
-            logger.info("Filtered buy: $" + str(buy_info["usd_value"]) + " < min $" + str(self.min_buy_usd))
+            logger.info(
+                "Filtered: $" + str(buy_info["usd_value"])
+                + " < min $" + str(self.min_buy_usd)
+                + " | " + signature[:12] + "..."
+            )
             return
 
         self.buy_count += 1
+        logger.info(
+            "Buy #" + str(self.buy_count) + " detected: $"
+            + str(buy_info["usd_value"]) + " | " + signature[:12] + "..."
+        )
         await self._send_notification(buy_info)
 
-    def _is_buy_transaction(self, logs: list) -> bool:
-        log_str = " ".join(logs).lower()
-        buy_indicators = ["swap", "trade", "buy", "exchange", "invoke"]
-        has_indicator = any(ind in log_str for ind in buy_indicators)
-        has_dex = any(prog in " ".join(logs) for prog in DEX_PROGRAMS)
-        return has_indicator or has_dex
-
-    async def _fetch_transaction(self, signature: str) -> dict | None:
-        url = "https://api.helius.xyz/v0/transactions?api-key=" + str(HELIUS_API_KEY)
-        payload = {"transactions": [signature]}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        return data[0] if data else None
-        except Exception as e:
-            logger.error("Failed to fetch tx " + signature + ": " + str(e))
-        return None
-
-    async def _parse_buy(self, tx: dict, signature: str) -> dict | None:
+    async def _parse_buy(self, tx: dict, signature: str):
         try:
             fee_payer = tx.get("feePayer", "Unknown")
             token_transfers = tx.get("tokenTransfers", [])
@@ -140,15 +143,18 @@ class SolanaMonitor:
 
             for transfer in token_transfers:
                 if transfer.get("mint") == self.contract_address:
-                    tokens_received = transfer.get("tokenAmount", 0)
+                    amount = transfer.get("tokenAmount", 0)
                     to_account = transfer.get("toUserAccount", "")
-                    if to_account:
+                    # Only count if tokens are going TO someone (a buy)
+                    if amount > 0 and to_account:
+                        tokens_received = amount
                         buyer_wallet = to_account
-                    break
+                        break
 
             if tokens_received == 0:
                 return None
 
+            # Calculate SOL spent by the buyer
             sol_spent = 0
             for transfer in native_transfers:
                 if transfer.get("fromUserAccount") == buyer_wallet:
@@ -167,18 +173,24 @@ class SolanaMonitor:
             }
 
         except Exception as e:
-            logger.error("Error parsing buy: " + str(e))
+            logger.error("Error parsing tx: " + str(e))
             return None
 
     async def _get_usd_value(self, sol_amount: float) -> float:
+        now = asyncio.get_event_loop().time()
+        # Cache SOL price for 60 seconds
+        if self._sol_price_cache and (now - self._sol_price_last_fetch) < 60:
+            return round(sol_amount * self._sol_price_cache, 2)
         try:
             url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        sol_price = data.get("solana", {}).get("usd", 0)
-                        return round(sol_amount * sol_price, 2)
+                        price = data.get("solana", {}).get("usd", 0)
+                        self._sol_price_cache = price
+                        self._sol_price_last_fetch = now
+                        return round(sol_amount * price, 2)
         except Exception:
             pass
         return 0.0
