@@ -6,12 +6,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from monitor import SolanaMonitor
 
 logging.basicConfig(
-format=”%(asctime)s - %(name)s - %(levelname)s - %(message)s”,
+format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 level=logging.INFO
 )
 logger = logging.getLogger(**name**)
 
-TELEGRAM_TOKEN = os.getenv(“TELEGRAM_TOKEN”)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # chat_id -> { contract_address -> SolanaMonitor }
 
@@ -25,21 +25,21 @@ DEFAULT_MIN_BUY = 1.0
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 await update.message.reply_text(
-“👋 *Solana Buy Bot*\n\n”
-“Notifies you on every buy above your minimum threshold.\n”
-“Watch *multiple tokens at once!*\n\n”
-“📋 *Commands:*\n”
-“`/watch <contract>` - Start watching a token\n”
-“`/unwatch <contract>` - Stop watching a specific token\n”
-“`/stopall` - Stop watching all tokens\n”
-“`/list` - Show all watched tokens\n”
-“`/status` - Summary stats\n”
-“`/setmin <amount>` - Set minimum buy in USD (default: $1)\n”
-“`/getmin` - Show current minimum buy\n\n”
-“Example:\n”
-“`/watch EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`\n”
-“`/setmin 50` - Only show buys of $50+”,
-parse_mode=“Markdown”
+"👋 *Solana Buy Bot*\n\n"
+"Notifies you on every buy above your minimum threshold.\n"
+"Watch *multiple tokens at once!*\n\n"
+"📋 *Commands:*\n"
+"`/watch <contract>` - Start watching a token\n"
+"`/unwatch <contract>` - Stop watching a specific token\n"
+"`/stopall` - Stop watching all tokens\n"
+"`/list` - Show all watched tokens\n"
+"`/status` - Summary stats\n"
+"`/setmin <amount>` - Set minimum buy in USD (default: $1)\n"
+"`/getmin` - Show current minimum buy\n\n"
+"Example:\n"
+"`/watch EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v`\n"
+"`/setmin 50` - Only show buys of $50+",
+parse_mode="Markdown"
 )
 
 async def setmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -83,9 +83,9 @@ async def getmin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 chat_id = update.effective_chat.id
 amount = min_buy_usd.get(chat_id, DEFAULT_MIN_BUY)
 await update.message.reply_text(
-f”📏 Current minimum buy: *${amount:,.2f}*\n”
-f”Use `/setmin <amount>` to change it.”,
-parse_mode=“Markdown”
+f"📏 Current minimum buy: *${amount:,.2f}*\n"
+f"Use `/setmin <amount>` to change it.",
+parse_mode="Markdown"
 )
 
 async def watch(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -277,7 +277,7 @@ else:
 
 def main():
 if not TELEGRAM_TOKEN:
-raise ValueError(“TELEGRAM_TOKEN environment variable not set!”)
+raise ValueError("TELEGRAM_TOKEN environment variable not set!")
 
 ```
 app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -295,5 +295,5 @@ logger.info("Bot started!")
 app.run_polling(allowed_updates=Update.ALL_TYPES)
 ```
 
-if **name** == “**main**”:
+if **name** == "**main**":
 main()
