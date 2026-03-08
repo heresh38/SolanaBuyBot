@@ -8,14 +8,14 @@ from telegram import Bot
 
 logger = logging.getLogger(**name**)
 
-HELIUS_API_KEY = os.getenv(“HELIUS_API_KEY”)
-HELIUS_WS_URL = “wss://mainnet.helius-rpc.com/?api-key=” + str(HELIUS_API_KEY)
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+HELIUS_WS_URL = "wss://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
 
 DEX_PROGRAMS = {
-“JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4”: “Jupiter”,
-“675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8”: “Raydium”,
-“whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc”: “Orca”,
-“6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P”: “Pump.fun”,
+"JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "Jupiter",
+"675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium",
+"whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": "Orca",
+"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun",
 }
 
 class SolanaMonitor:
