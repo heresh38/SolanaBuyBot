@@ -6,7 +6,7 @@ import aiohttp
 import websockets
 from telegram import Bot
 
-logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 HELIUS_WS_URL = "wss://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
@@ -51,7 +51,7 @@ class SolanaMonitor:
 
     async def _connect_and_listen(self):
         ws_url = "wss://mainnet.helius-rpc.com/?api-key=" + str(HELIUS_API_KEY)
-        async with websockets.connect(ws_url, ping_interval=30) as ws:
+        async with websockets.connect(ws_url, ping_interval=20, ping_timeout=10) as ws:
             self._ws = ws
 
             subscribe_msg = {
